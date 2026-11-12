@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZIP FLAC Playlist Player</title>
+    <!-- Load JSZip from CDN to unzip files in the browser -->
+    <script src="https://cloudflare.com"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+        .container {
+            background-color: #1e1e1e;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        }
+        h2 {
+            margin-top: 0;
+            color: #1db954;
+        }
+        input[type="file"] {
+            margin-bottom: 20px;
+            display: block;
+            width: 100%;
+            padding: 10px;
+            background: #282828;
+            border-radius: 6px;
+            color: #fff;
+            box-sizing: border-box;
+        }
+        #now-playing {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #b3b3b3;
+            font-size: 0.95em;
+        }
+        audio {
+            width: 100%;
+            margin-bottom: 15px;
+            outline: none;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #1db954;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: bold;
+            flex: 1;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background-color: #1ed760;
+        }
+        button:disabled {
+            background-color: #404040;
+            color: #888;
+            cursor: not-allowed;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            max-height: 350px;
+            overflow-y: auto;
+            border-top: 1px solid #333;
+        }
+        li {
+            padding: 12px 10px;
+            border-bottom: 1px solid #282828;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            font-size: 0.9em;
+            transition: background 0.2s;
+        }
+        li:hover {
+            background-color: #282828;
+        }
+        li.active {
+            color: #1db954;
+            font-weight: bold;
+            background-color: #252525;
+        }
+        .status {
+            color: #aaa;
+            font-style: italic;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>ZIP FLAC Player</h2>
+    <input type="file" id="zip-input" accept=".zip">
+    <div id="status" class="status">Select a .zip file containing .flac audio tracks.</div>
+    
+    <div id="now-playing">Not playing</div>
+    <audio id="audio-player" controls></audio>
+    
+    <div class="controls">
+        <button id="prev-btn" disabled>⏮ Previous</button>
+        <button id="next-btn" disabled>Next ⏭</button>
+    </div>
+
+    <ul id="playlist"></ul>
+</div>
+
+<script>
+    const zipInput = document.getElementById('zip-input');
+    const statusDiv = document.getElementById('status');
+    const nowPlayingDiv = document.getElementById('now-playing');
+    const audioPlayer = document.getElementById('audio-player');
+    const playlistUl = document.getElementById('playlist');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+
+    let tracks = [];
+    let currentIndex = 0;
+    let currentBlobUrl = null;
+
+    // Handle ZIP file selection
+    zipInput.addEventListener('change', async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        // Reset state
+        tracks = [];
+        currentIndex = 0;
+        playlistUl.innerHTML = '';
+        audioPlayer.pause();
+        audioPlayer.src = '';
+        nowPlayingDiv.textContent = 'Not playing';
+        prevBtn.disabled = true;
+        nextBtn.disabled = true;
+        statusDiv.textContent = 'Reading ZIP archive...';
+
+        try {
+            const zip = await JSZip.loadAsync(file);
+            
+            // Find all .flac files (ignoring hidden macOS metadata files)
+            zip.forEach((relativePath, zipEntry) => {
+                if (!zipEntry.dir && 
+                    relativePath.toLowerCase().endsWith('.flac') && 
+                    !relativePath.includes('__MACOSX') &&
+                    !relativePath.split('/').pop().startsWith('.')) {
+                    tracks.push({
+                        name: relativePath.split('/').pop(), // Get clean filename
+                        fullPath: relativePath,
+                        entry: zipEntry
+                    });
+                }
+            });
+
+            // Sort tracks alphabetically/numerically (e.g., 01 - Track, 02 - Track)
+            tracks.sort((a, b) => a.fullPath.localeCompare(b.fullPath, undefined, { numeric: true, sensitivity: 'base' }));
+
+            if (tracks.length === 0) {
+                statusDiv.textContent = 'No .flac files found inside this ZIP.';
+                return;
+            }
+
+            statusDiv.textContent = `Loaded ${tracks.length} FLAC tracks.`;
+            renderPlaylist();
+            playTrack(0);
+
+        } catch (error) {
+            console.error(error);
+            statusDiv.textContent = 'Error reading ZIP file. Make sure it is a valid archive.';
+        }
+    });
+
+    // Build the clickable HTML list
+    function renderPlaylist() {
+        playlistUl.innerHTML = '';
+        tracks.forEach((track, index) => {
+            const li = document.createElement('li');
+            li.textContent = `${index + 1}. ${track.name}`;
+            li.onclick = () => playTrack(index);
+            playlistUl.appendChild(li);
+        });
+    }
+
+    // Extract and play a specific track
+    async function playTrack(index) {
+        if (index < 0 || index >= tracks.length) return;
+        
+        currentIndex = index;
+        const track = tracks[currentIndex];
+        
+        nowPlayingDiv.textContent = `Extracting: ${track.name}...`;
+        updateUI();
+
+        // Free up memory from the previous song
+        if (currentBlobUrl) {
+            URL.revokeObjectURL(currentBlobUrl);
+        }
+
+        // Extract the FLAC file as a Blob and create a playable URL
+        const blob = await track.entry.async('blob');
+        const flacBlob = new Blob([blob], { type: 'audio/flac' });
+        currentBlobUrl = URL.createObjectURL(flacBlob);
+
+        audioPlayer.src = currentBlobUrl;
+        nowPlayingDiv.textContent = `Playing: ${track.name}`;
+        audioPlayer.play();
+    }
+
+    // Highlight current song and update buttons
+    function updateUI() {
+        const items = playlistUl.querySelectorAll('li');
+        items.forEach((item, idx) => {
+            item.classList.toggle('active', idx === currentIndex);
+        });
+
+        prevBtn.disabled = currentIndex === 0;
+        nextBtn.disabled = currentIndex === tracks.length - 1;
+    }
+
+    // Automatically play the next track when the current one finishes
+    audioPlayer.addEventListener('ended', () => {
+        if (currentIndex + 1 < tracks.length) {
+            playTrack(currentIndex + 1);
+        } else {
+            nowPlayingDiv.textContent = 'Playlist finished.';
+        }
+    });
+
+    // Button controls
+    prevBtn.addEventListener('click', () => playTrack(currentIndex - 1));
+    nextBtn.addEventListener('click', () => playTrack(currentIndex + 1));
+</script>
+
+</body>
+</html>
